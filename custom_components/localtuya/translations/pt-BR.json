@@ -61,7 +61,7 @@
                 "menu_options": {
                     "add_device": "Adicionar novo dispositivo",
                     "edit_device": "Reconfigurar dispositivo existente",
-                    "restart_scan": "Reiniciar varredura",
+                    "restart_scan": "Buscar Dispositivos novamente",
                     "delete_device": "Excluir dispositivo",
                     "configure_cloud": "Gerenciar conta da API de Nuvem"
                 }
@@ -94,12 +94,12 @@
                 }
             },
             "restart_scan": {
-                "title": "Reiniciar varredura",
+                "title": "Buscar Dispositivos novamente",
                 "description": "Procurando dispositivos Tuya na rede local..."
             },
             "restart_scan_result": {
-                "title": "Reiniciar varredura",
-                "description": "Resultado da varredura:\n{message}\n\nLog da descoberta:\n{log}"
+                "title": "Buscar Dispositivos novamente",
+                "description": "Resumo da varredura e comparação local x app:\n{message}\n\nLog da descoberta:\n{log}"
             },
             "configure_device": {
                 "title": "Configurar conectividade do dispositivo",
@@ -135,6 +135,21 @@
                 "description": "Ocorreu um erro: {err_msg}. Se o motivo não estiver sendo exibido, verifique os registros.",
                 "menu_options": {
                     "device_setup_method":"Voltar ao método de configuração"
+                }
+            },
+            "review_auto_entities": {
+                "title": "Revisar entidades sugeridas",
+                "description": "O LocalTuya encontrou entidades para este dispositivo. Deseja revisar a lista antes de salvar?",
+                "data": {
+                    "auto_entity_review": "Revisar entidades sugeridas antes de salvar"
+                }
+            },
+            "select_auto_entities": {
+                "title": "Selecionar entidades sugeridas",
+                "description": "Escolha quais entidades manter ({entity_count} sugeridas).",
+                "data": {
+                    "auto_entity_selection": "Entidades sugeridas",
+                    "auto_entity_review_each": "Abrir revisão detalhada para cada entidade selecionada"
                 }
             },
             "pick_entity_type": {

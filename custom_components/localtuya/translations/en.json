@@ -98,7 +98,7 @@
             },
             "restart_scan_result": {
                 "title": "Restart scan",
-                "description": "Scan result:\n{message}\n\nDiscovery log:\n{log}"
+                "description": "Scan summary and local vs app comparison:\n{message}\n\nDiscovery log:\n{log}"
             },
             "confirm": {
                 "title": "Confirmation",
@@ -138,6 +138,21 @@
                 "description": "An error occurred: {err_msg}. If reason isn't showing, check logs.",
                 "menu_options": {
                     "device_setup_method":"Return to Setup method"
+                }
+            },
+            "review_auto_entities": {
+                "title": "Review suggested entities",
+                "description": "LocalTuya found entities for this device. Do you want to review the list before saving?",
+                "data": {
+                    "auto_entity_review": "Review suggested entities before saving"
+                }
+            },
+            "select_auto_entities": {
+                "title": "Select suggested entities",
+                "description": "Choose which entities to keep ({entity_count} suggested).",
+                "data": {
+                    "auto_entity_selection": "Suggested entities",
+                    "auto_entity_review_each": "Open detailed review for each selected entity"
                 }
             },
             "pick_entity_type": {

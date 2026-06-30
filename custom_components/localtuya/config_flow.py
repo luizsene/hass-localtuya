@@ -44,6 +44,7 @@ from homeassistant.const import (
 
 from .coordinator import HassLocalTuyaData
 from .core import pytuya
+from .core.entity_generator import gen_cloud_entities
 from .core.cloud_api import TUYA_ENDPOINTS, TuyaCloudApi
 from .core.helpers import templates, get_gateway_by_deviceid, gen_localtuya_entities
 from .const import (
@@ -89,6 +90,9 @@ TEMPLATES = "templates"
 NO_ADDITIONAL_ENTITIES = "no_additional_entities"
 SELECTED_DEVICE = "selected_device"
 EXPORT_CONFIG = "export_config"
+AUTO_ENTITY_SELECTION = "auto_entity_selection"
+AUTO_ENTITY_REVIEW = "auto_entity_review"
+AUTO_ENTITY_REVIEW_EACH = "auto_entity_review_each"
 
 TUYA_CATEGORY = "category"
 DEVICE_CLOUD_DATA = "device_cloud_data"
@@ -265,6 +269,7 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
         self._scan_errors: dict[str, str] = {}
         self._scan_progress_message = "Aguardando broadcasts..."
         self._last_progress_result = None
+        self.auto_entity_dps_data: dict[str, dict] = {}
 
     @property
     def localtuya_data(self) -> HassLocalTuyaData:
@@ -296,9 +301,9 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
         try:
             discovered_devices, scan_logs = await discover(progress_callback=_progress)
             self._scan_logs = scan_logs or self._scan_logs
-            self._scan_devices = mergeDevicesList(
-                discovered_devices, self.cloud_data.device_list
-            )
+            # Keep only raw local discovery here; merge with cloud is done later
+            # using a freshly refreshed cloud list in restart_scan_result.
+            self._scan_devices = discovered_devices
         except OSError as ex:
             if ex.errno == errno.EADDRINUSE:
                 self._scan_errors["base"] = "address_in_use"
@@ -345,17 +350,71 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
             self._scan_task = None
             return await self.async_step_init()
 
-        discovered_devices = self._scan_devices
+        discovered_devices = dict(self._scan_devices)
+        local_scan_count = len(discovered_devices)
+        continuous_cache_count = 0
+        cached_devices = {}
+        domain_data = self.hass.data.get(DOMAIN) or {}
+        if DATA_DISCOVERY in domain_data:
+            cached_devices = dict(domain_data[DATA_DISCOVERY].devices)
+            continuous_cache_count = len(cached_devices)
+            discovered_devices.update(cached_devices)
+
+        combined_local_count = len(discovered_devices)
+        cloud_devices = {}
+
+        if not self.config_entry.data.get(CONF_NO_CLOUD, True):
+            try:
+                await self.cloud_data.async_get_devices_list(force_update=True)
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.debug("Unable to refresh cloud devices for scan result: %s", ex)
+            cloud_devices = self.cloud_data.device_list or {}
+
+            # Use fresh cloud data for the same merge strategy as add_device step.
+            discovered_devices = mergeDevicesList(discovered_devices, cloud_devices)
+
         self.discovered_devices = discovered_devices
 
-        summary_lines = [f"Varredura concluída. Encontrados {len(discovered_devices)} dispositivo(s)."]
-        if discovered_devices:
-            summary_lines.extend(
-                f"- {dev_id} ({dev.get(CONF_TUYA_IP, 'desconhecido')})"
-                for dev_id, dev in sorted(discovered_devices.items())
+        local_codes, local_ips_by_code = _local_device_index(discovered_devices)
+        cloud_ids = set(cloud_devices)
+        matched_ids = local_codes & cloud_ids
+        local_only_ids = local_codes - cloud_ids
+        cloud_only_ids = cloud_ids - local_codes
+
+        merged_count = len(discovered_devices)
+
+        summary_lines = [f"Varredura concluída. Encontrados {local_scan_count} dispositivo(s) na rede local."]
+        if continuous_cache_count:
+            summary_lines.append(
+                f"Cache continuo de descoberta: {continuous_cache_count} dispositivo(s)."
             )
-        else:
-            summary_lines.append("- Nenhum dispositivo encontrado na rede local.")
+        if combined_local_count != local_scan_count:
+            summary_lines.append(
+                f"Total local combinado (snapshot + cache): {combined_local_count} dispositivo(s)."
+            )
+        if not local_scan_count:
+            summary_lines.append("Nenhum dispositivo encontrado na rede local.")
+
+        if cloud_devices:
+            summary_lines.extend(
+                [
+                    "",
+                    f"Comparativo local x app (por código): {len(matched_ids)} em ambos, {len(local_only_ids)} só na rede local, {len(cloud_only_ids)} só no app.",
+                    f"Itens na listagem após merge local+nuvem: {merged_count}.",
+                    "",
+                    "Dispositivos cadastrados no app Tuya (API):",
+                ]
+            )
+            summary_lines.extend(
+                cloud_devices_table(cloud_devices, local_codes, local_ips_by_code)
+            )
+        elif not self.config_entry.data.get(CONF_NO_CLOUD, True):
+            summary_lines.extend(
+                [
+                    "",
+                    "Comparativo local x app indisponível: nenhum dispositivo retornado pela API de nuvem.",
+                ]
+            )
 
         log_lines = self._scan_logs if self._scan_logs else ["Nenhum log de descoberta foi coletado."]
         placeholders = {
@@ -716,6 +775,9 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
         device_data = self.cloud_data.device_list.get(dev_id)
         if device_data:
             category = self.cloud_data.device_list[dev_id].get(TUYA_CATEGORY, "")
+            self.auto_entity_dps_data = device_data.get("dps_data", {}) or {}
+        else:
+            self.auto_entity_dps_data = {}
 
         localtuya_data = {
             DEVICE_CLOUD_DATA: device_data,
@@ -723,14 +785,14 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
             CONF_FRIENDLY_NAME: self.device_data.get(CONF_FRIENDLY_NAME),
         }
 
-        dev_data = gen_localtuya_entities(localtuya_data, category)
+        dev_data = gen_localtuya_entities(localtuya_data, category) or []
+        used_ids = {str(entity.get(CONF_ID)) for entity in dev_data}
+        dev_data.extend(gen_cloud_entities(localtuya_data, used_ids))
 
         # Process to add the device to localtuya HA Config.
         if dev_data:
             self.entities = dev_data
-            return await self.async_step_pick_entity_type(
-                {NO_ADDITIONAL_ENTITIES: True}
-            )
+            return await self.async_step_review_auto_entities()
 
         if not is_cloud:
             err_msg = f"This feature requires cloud API setup for now"
@@ -749,21 +811,74 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
             description_placeholders=placeholders,
         )
 
+    async def async_step_review_auto_entities(self, user_input=None):
+        """Ask whether the user wants to review the suggested entities."""
+
+        if user_input is not None:
+            if user_input.get(AUTO_ENTITY_REVIEW):
+                return await self.async_step_select_auto_entities()
+
+            return self._save_auto_configured_device()
+
+        schema = vol.Schema(
+            {
+                vol.Required(AUTO_ENTITY_REVIEW, default=True): bool,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="review_auto_entities",
+            data_schema=schema,
+        )
+
+    async def async_step_select_auto_entities(self, user_input=None):
+        """Let the user select which auto-detected entities to keep."""
+
+        if user_input is not None:
+            selected_entities = user_input.get(AUTO_ENTITY_SELECTION, [])
+            self.entities = filter_auto_entities(
+                self.entities, selected_entities, self.auto_entity_dps_data
+            )
+
+            if not self.entities:
+                return self.async_abort(reason="no_entities")
+
+            if user_input.get(AUTO_ENTITY_REVIEW_EACH):
+                self.editing_device = True
+                self.device_data.update(
+                    {
+                        CONF_DEVICE_ID: self.selected_device,
+                        CONF_NODE_ID: self.nodeID,
+                        CONF_DPS_STRINGS: self.dps_strings,
+                        CONF_ENTITIES: [],
+                    }
+                )
+                return await self.async_step_configure_entity()
+
+            return self._save_auto_configured_device()
+
+        entity_options = auto_entity_labels(self.entities, self.auto_entity_dps_data)
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    AUTO_ENTITY_SELECTION,
+                    description={"suggested_value": entity_options},
+                ): cv.multi_select(entity_options),
+                vol.Required(AUTO_ENTITY_REVIEW_EACH, default=False): bool,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="select_auto_entities",
+            data_schema=schema,
+            description_placeholders={"entity_count": len(entity_options)},
+        )
+
     async def async_step_pick_entity_type(self, user_input=None):
         """Handle asking if user wants to add another entity."""
         if user_input is not None:
             if user_input.get(NO_ADDITIONAL_ENTITIES):
-                config = {
-                    **self.device_data,
-                    CONF_DPS_STRINGS: self.dps_strings,
-                    CONF_ENTITIES: self.entities,
-                }
-
-                dev_id = self.device_data.get(CONF_DEVICE_ID)
-
-                new_data = self.config_entry.data.copy()
-                new_data[CONF_DEVICES].update({dev_id: config})
-                return self._update_entry(new_data)
+                return self._save_auto_configured_device()
 
             if user_input.get(USE_TEMPLATE):
                 return await self.async_step_choose_template()
@@ -780,6 +895,24 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
             )
 
         return self.async_show_form(step_id="pick_entity_type", data_schema=schema)
+
+    @callback
+    def _save_auto_configured_device(self):
+        """Persist the auto-configured device with the selected entities."""
+
+        config = {
+            **self.device_data,
+            CONF_DPS_STRINGS: self.dps_strings,
+            CONF_ENTITIES: self.entities,
+        }
+
+        dev_id = self.device_data.get(CONF_DEVICE_ID)
+        entry_data = dict(getattr(self.config_entry, "data", {}) or {})
+        new_data = dict(entry_data)
+        devices = dict(new_data.get(CONF_DEVICES, {}))
+        devices[dev_id] = config
+        new_data[CONF_DEVICES] = devices
+        return self._update_entry(new_data)
 
     async def async_step_choose_template(self, user_input=None):
         """Handle asking which templates to use"""
@@ -1028,8 +1161,11 @@ async def setup_localtuya_devices(
     for dev_id, dev_data in copy.deepcopy(devices).items():
         category = devices_cloud_data[dev_id].get("category")
         dev_data[DEVICE_CLOUD_DATA] = devices_cloud_data[dev_id]
-        if category and (dps_strings := dev_data.get(CONF_DPS_STRINGS, False)):
-            dev_entites = gen_localtuya_entities(dev_data, category)
+        dev_entites = []
+        if category and dev_data.get(CONF_DPS_STRINGS):
+            dev_entites = gen_localtuya_entities(dev_data, category) or []
+        used_ids = {str(entity.get(CONF_ID)) for entity in dev_entites}
+        dev_entites.extend(gen_cloud_entities(dev_data, used_ids))
 
         # Configure entities fails
         if not dev_entites:
@@ -1132,6 +1268,103 @@ def mergeDevicesList(localList: dict, cloudList: dict, addSubDevices=True) -> di
     return newList
 
 
+def cloud_devices_table(
+    cloud_devices: dict[str, dict],
+    local_codes: set[str],
+    local_ips_by_code: dict[str, str],
+) -> list[str]:
+    """Return a markdown-table summary for cloud devices with local match status."""
+
+    rows = [
+        "| Nome | Codigo | IP local | Cat | Modelo | On | Key | Local |",
+        "| --- | --- | --- | --- | --- | :---: | --- | :---: |",
+    ]
+
+    for dev_id, dev in sorted(
+        cloud_devices.items(), key=lambda item: _device_display_name(item[1]).lower()
+    ):
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_table_cell(_device_display_name(dev)),
+                    _md_table_cell(dev_id),
+                    _md_table_cell(local_ips_by_code.get(dev_id, "-")),
+                    _md_table_cell(dev.get("category", "-")),
+                    _md_table_cell(dev.get("model", "-")),
+                    _md_table_cell("sim" if dev.get("online") else "nao"),
+                    _md_table_cell(dev.get(CONF_LOCAL_KEY, "-")),
+                    _md_table_cell("sim" if dev_id in local_codes else "nao"),
+                ]
+            )
+            + " |"
+        )
+
+    # Also show devices discovered locally that are not present in cloud API.
+    local_only_codes = sorted(local_codes - set(cloud_devices))
+    for dev_id in local_only_codes:
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_table_cell("(somente local)"),
+                    _md_table_cell(dev_id),
+                    _md_table_cell(local_ips_by_code.get(dev_id, "-")),
+                    _md_table_cell("-"),
+                    _md_table_cell("-"),
+                    _md_table_cell("-"),
+                    _md_table_cell("-"),
+                    _md_table_cell("sim"),
+                ]
+            )
+            + " |"
+        )
+
+    return rows
+
+
+def _device_display_name(device: dict) -> str:
+    """Return the best available display name for a cloud device."""
+
+    return str(device.get("customName") or device.get("custom_name") or device.get(CONF_NAME) or "-")
+
+
+def _local_device_index(discovered_devices: dict[str, dict]) -> tuple[set[str], dict[str, str]]:
+    """Build local indexes using device code and corresponding discovered IP."""
+
+    local_codes: set[str] = set()
+    local_ips_by_code: dict[str, str] = {}
+
+    for dev_id, dev in discovered_devices.items():
+        code = str(dev.get(CONF_TUYA_GWID) or dev_id)
+        ip = str(dev.get(CONF_TUYA_IP) or "-")
+        local_codes.add(code)
+        local_ips_by_code.setdefault(code, ip)
+
+    return local_codes, local_ips_by_code
+
+
+def mask_secret(value: str | None, visible=3) -> str:
+    """Mask secret values while preserving short edge context."""
+
+    if not value:
+        return "-"
+    value = str(value)
+    if len(value) <= visible * 2:
+        return "*" * len(value)
+    return f"{value[:visible]}...{value[-visible:]}"
+
+
+def _md_table_cell(value: Any) -> str:
+    """Escape and normalize values for markdown-table rendering."""
+
+    text = str(value) if value is not None else "-"
+    text = text.replace("\n", " ").replace("\r", " ").strip()
+    if not text:
+        text = "-"
+    return text.replace("|", "\\|")
+
+
 def options_schema(entities):
     """Create schema for options."""
     entity_names = [
@@ -1174,6 +1407,120 @@ def schema_suggested_values(schema: vol.Schema, **defaults):
 
         new_schema[new_field] = field_type
     return vol.Schema(new_schema)
+
+
+def auto_entity_labels(
+    entities: list[dict], dps_data: dict[str, dict] | None = None
+) -> list[str]:
+    """Return human-readable labels for the auto-generated entities."""
+
+    return [label for _, label in auto_entities_with_labels(entities, dps_data)]
+
+
+def auto_entities_with_labels(
+    entities: list[dict], dps_data: dict[str, dict] | None = None
+) -> list[tuple[dict, str]]:
+    """Return sorted entity/label pairs used by review and filtering steps."""
+
+    dps_data = dps_data or {}
+    sorted_entities = sorted(
+        entities,
+        key=lambda entity: auto_entity_sort_key(
+            entity, dps_data.get(str(entity.get(CONF_ID)), {})
+        ),
+    )
+    return [
+        (
+            entity,
+            auto_entity_label(entity, dps_data.get(str(entity.get(CONF_ID)), {})),
+        )
+        for entity in sorted_entities
+    ]
+
+
+def auto_entity_sort_key(entity: dict, dp_data: dict[str, Any]) -> tuple:
+    """Sort auto-generated entities by access mode, type and dp id."""
+
+    access_mode = str(dp_data.get("accessMode") or "").lower()
+    dp_type = str(dp_data.get("type") or entity.get(CONF_PLATFORM) or "").lower()
+    dp_id = _sort_dp_id(entity.get(CONF_ID))
+    return (_access_priority(access_mode), _type_priority(dp_type), dp_id)
+
+
+def auto_entity_label(entity: dict, dp_data: dict[str, Any]) -> str:
+    """Build a detailed preview label for one auto-generated entity."""
+
+    dp_id = str(entity.get(CONF_ID, "?"))
+    friendly_name = str(entity.get(CONF_FRIENDLY_NAME) or dp_data.get("name") or "")
+    code = str(dp_data.get("code") or friendly_name or dp_id)
+    dp_type = str(dp_data.get("type") or entity.get(CONF_PLATFORM) or "unknown")
+    access_mode = str(dp_data.get("accessMode") or "unknown")
+    current_value = _format_preview_value(dp_data.get("value", entity.get("value")))
+
+    return (
+        f"DP {dp_id}: {friendly_name}\n"
+        f"code: {code}\n"
+        f"type: {dp_type} | access: {access_mode}\n"
+        f"value: {current_value}"
+    )
+
+
+def _access_priority(access_mode: str) -> int:
+    """Return a deterministic ordering for access mode."""
+
+    priorities = {
+        "rw": 0,
+        "ro": 1,
+        "": 2,
+    }
+    return priorities.get(access_mode, 2)
+
+
+def _type_priority(dp_type: str) -> int:
+    """Return a deterministic ordering for DP type."""
+
+    priorities = {
+        "bool": 0,
+        "boolean": 0,
+        "enum": 1,
+        "integer": 2,
+        "value": 2,
+        "bitmap": 3,
+        "string": 4,
+    }
+    return priorities.get(dp_type, 5)
+
+
+def _sort_dp_id(dp_id: Any) -> tuple[int, str]:
+    """Sort DP ids numerically when possible and lexicographically otherwise."""
+
+    try:
+        return (0, f"{int(dp_id):06d}")
+    except (TypeError, ValueError):
+        return (1, str(dp_id))
+
+
+def _format_preview_value(value: Any) -> str:
+    """Format cloud values for compact display in the review step."""
+
+    if isinstance(value, bool):
+        return str(value).lower()
+    if value is None:
+        return "-"
+    return str(value)
+
+
+def filter_auto_entities(
+    entities: list[dict], selected_labels: list[str], dps_data: dict[str, dict] | None = None
+) -> list[dict]:
+    """Keep only the entities selected in the review step."""
+
+    selected = set(selected_labels)
+    return [
+        entity
+        for entity, label in auto_entities_with_labels(entities, dps_data)
+        if label in selected
+    ]
 
 
 def dps_string_list(dps_data: dict[str, dict], cloud_dp_codes: dict[str, dict]) -> list:
@@ -1410,12 +1757,10 @@ async def validate_input(entry_runtime: HassLocalTuyaData, data):
     # won't work in this case
     if not bypass_connection and error:
         raise error
-    # If bypass handshake. otherwise raise failed to make handshake with device.
-    # --- Cloud: We will use the DPS found on cloud if exists.
-    # --- No cloud: user will have to input the DPS manually.
-    if not detected_dps_device and not (
-        (cloud_dp_codes or detected_dps) and bypass_handshake
-    ):
+    # If neither the local scan nor the cloud returned any DPS, fail early.
+    # The cloud result should be enough to continue even when the local scan
+    # cannot discover any datapoints.
+    if not detected_dps_device and not (cloud_dp_codes or detected_dps or bypass_handshake):
         raise EmptyDpsList
 
     logger.info("Total DPS: %s", detected_dps)
