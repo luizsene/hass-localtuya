@@ -1,5 +1,5 @@
 {
-  "domain": "localtuya_test",
+  "domain": "localtuya",
   "name": "Local Tuya Test",
   "codeowners": [],
   "config_flow": true,
@@ -9,5 +9,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/luizsene/hass-localtuya/issues",
   "requirements": [],
-  "version": "2026.06.26"
+  "version": "2026.07.10"
 }
