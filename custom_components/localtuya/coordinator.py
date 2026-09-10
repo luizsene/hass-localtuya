@@ -39,6 +39,7 @@ from .const import (
     CONF_TUYA_IP,
     DATA_DISCOVERY,
     DOMAIN,
+    SUPPORTED_PROTOCOL_VERSIONS,
     DeviceConfig,
     RESTORE_STATES,
 )
@@ -178,6 +179,41 @@ class TuyaDevice(TuyaListener, ContextualLogger):
                 break
             await subdevice.async_connect()
 
+    async def _connect_with_protocol_version(self):
+        """Connect using the configured protocol version, auto-detecting it if needed."""
+        raw_version = self._device_config.protocol_version
+        try:
+            return await pytuya_connect(
+                self._device_config.host,
+                self._device_config.id,
+                self.local_key,
+                float(raw_version),
+                self._device_config.enable_debug,
+                self,
+            )
+        except ValueError:
+            # protocol_version wasn't a number (e.g. legacy "auto" entries) - detect it.
+            self.warning(
+                f"Invalid protocol version '{raw_version}', auto-detecting..."
+            )
+            last_error: Exception | None = None
+            for ver in SUPPORTED_PROTOCOL_VERSIONS:
+                try:
+                    return await pytuya_connect(
+                        self._device_config.host,
+                        self._device_config.id,
+                        self.local_key,
+                        float(ver),
+                        self._device_config.enable_debug,
+                        self,
+                    )
+                except Exception as ex:  # pylint: disable=broad-except
+                    last_error = ex
+                    continue
+            raise last_error or ValueError(
+                f"Could not detect protocol version for {self._device_config.host}"
+            )
+
     async def _make_connection(self):
         """Subscribe localtuya entity events."""
         if self.is_sleep and not self._status:
@@ -206,14 +242,7 @@ class TuyaDevice(TuyaListener, ContextualLogger):
                     if self._device_config.enable_debug:
                         self._interface.enable_debug(True, gateway.friendly_name)
                 else:
-                    self._interface = await pytuya_connect(
-                        self._device_config.host,
-                        self._device_config.id,
-                        self.local_key,
-                        float(self._device_config.protocol_version),
-                        self._device_config.enable_debug,
-                        self,
-                    )
+                    self._interface = await self._connect_with_protocol_version()
                     self._interface.enable_debug(
                         self._device_config.enable_debug, self.friendly_name
                     )

@@ -62,7 +62,8 @@
                     "add_device": "Add new device",
                     "edit_device": "Reconfigure existing device",
                     "restart_scan": "Restart scan",
-                    "configure_cloud": "Manage Cloud API account"
+                    "configure_cloud": "Manage Cloud API account",
+                    "disable_logs": "Disable logs"
                 }
             },
             "add_device": {
@@ -95,6 +96,13 @@
             "restart_scan": {
                 "title": "Restart scan",
                 "description": "Scanning the local network for Tuya devices..."
+            },
+            "disable_logs": {
+                "title": "Disable logs",
+                "description": "Silence all log messages produced by the LocalTuya integration.",
+                "data": {
+                    "disable_logs": "Disable LocalTuya logs"
+                }
             },
             "restart_scan_result": {
                 "title": "Restart scan",

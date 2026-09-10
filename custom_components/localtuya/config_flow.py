@@ -54,6 +54,7 @@ from .const import (
     CONF_DPS_STRINGS,
     CONF_EDIT_DEVICE,
     CONF_ENABLE_ADD_ENTITIES,
+    CONF_DISABLE_LOGS,
     CONF_ENABLE_DEBUG,
     CONF_GATEWAY_ID,
     CONF_LOCAL_KEY,
@@ -103,7 +104,14 @@ CONFIGURE_MENU = [
     CONF_EDIT_DEVICE,
     CONF_CONFIGURE_CLOUD,
     CONF_RESTART_SCAN,
+    CONF_DISABLE_LOGS,
 ]
+
+DISABLE_LOGS_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_DISABLE_LOGS, default=False): bool,
+    }
+)
 
 
 def col_to_select(
@@ -427,6 +435,22 @@ class LocalTuyaOptionsFlowHandler(OptionsFlow):
             data_schema=vol.Schema({}),
             errors=self._scan_errors,
             description_placeholders=placeholders,
+        )
+
+    async def async_step_disable_logs(self, user_input=None):
+        """Toggle whether LocalTuya should emit logs to Home Assistant's log."""
+        if user_input is not None:
+            new_data = self.config_entry.data.copy()
+            new_data[CONF_DISABLE_LOGS] = user_input[CONF_DISABLE_LOGS]
+            return self._update_entry(new_data)
+
+        defaults = {
+            CONF_DISABLE_LOGS: self.config_entry.data.get(CONF_DISABLE_LOGS, False)
+        }
+
+        return self.async_show_form(
+            step_id="disable_logs",
+            data_schema=schema_suggested_values(DISABLE_LOGS_SCHEMA, **defaults),
         )
 
     async def async_step_configure_cloud(self, user_input=None):
