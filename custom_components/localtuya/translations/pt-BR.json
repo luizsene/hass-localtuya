@@ -63,7 +63,8 @@
                     "edit_device": "Reconfigurar dispositivo existente",
                     "restart_scan": "Buscar Dispositivos novamente",
                     "delete_device": "Excluir dispositivo",
-                    "configure_cloud": "Gerenciar conta da API de Nuvem"
+                    "configure_cloud": "Gerenciar conta da API de Nuvem",
+                    "disable_logs": "Desabilitar logs"
                 }
 
             },
@@ -96,6 +97,13 @@
             "restart_scan": {
                 "title": "Buscar Dispositivos novamente",
                 "description": "Procurando dispositivos Tuya na rede local..."
+            },
+            "disable_logs": {
+                "title": "Desabilitar logs",
+                "description": "Silencia todas as mensagens de log geradas pela integração LocalTuya.",
+                "data": {
+                    "disable_logs": "Desabilitar logs do LocalTuya"
+                }
             },
             "restart_scan_result": {
                 "title": "Buscar Dispositivos novamente",

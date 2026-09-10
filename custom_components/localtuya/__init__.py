@@ -33,6 +33,7 @@ from .coordinator import TuyaDevice, HassLocalTuyaData, TuyaCloudApi
 from .config_flow import ENTRIES_VERSION
 from .const import (
     ATTR_UPDATED_AT,
+    CONF_DISABLE_LOGS,
     CONF_GATEWAY_ID,
     CONF_NODE_ID,
     CONF_NO_CLOUD,
@@ -58,6 +59,13 @@ SERVICE_SET_DP_SCHEMA = vol.Schema(
         vol.Required(CONF_VALUE): object,
     }
 )
+
+
+def _apply_log_preference(disable_logs: bool) -> None:
+    """Silence (or restore) all log records emitted by this integration."""
+    logging.getLogger("custom_components.localtuya").setLevel(
+        logging.CRITICAL if disable_logs else logging.NOTSET
+    )
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
@@ -301,6 +309,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             entry.version,
         )
         return
+
+    _apply_log_preference(entry.data.get(CONF_DISABLE_LOGS, False))
 
     region = entry.data[CONF_REGION]
     client_id = entry.data[CONF_CLIENT_ID]
